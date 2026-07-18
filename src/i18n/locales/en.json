@@ -45,5 +45,13 @@
   "upload": {
     "selectFile": "Select Video File",
     "dragDropHint": "You can also drag and drop video files anywhere in this window"
+  },
+  "gallery": {
+    "preview": "Image preview",
+    "close": "Close",
+    "previous": "Previous image",
+    "next": "Next image",
+    "counter": "{{current}} / {{total}}",
+    "goto": "Go to image {{n}}"
   }
 }

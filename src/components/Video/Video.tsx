@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import type { VideoMetadata } from '@/types';
 import { useTranslation } from 'react-i18next';
 import { IconX, IconAlertTriangle, IconRefresh } from '@tabler/icons-react';
+import Gallery from '../Gallery/Gallery';
 
 export default function Video({
   path,
@@ -16,6 +18,7 @@ export default function Video({
   onRetry?: (filePath: string) => void; // If retry functionality is needed, pass the file path
 }) {
   const { t } = useTranslation();
+  const [galleryIndex, setGalleryIndex] = useState<number | null>(null);
 
   // Error state
   if (error) {
@@ -110,7 +113,16 @@ export default function Video({
                     <img
                       src={thumbnail}
                       alt={t('video.thumbnail')}
-                      className="object-contain rounded-lg border-2 border-gray-200 hover:border-blue-400 hover:scale-105 transition-all duration-200 shadow-sm hover:shadow-md cursor-pointer justify-self-center"
+                      onClick={() => setGalleryIndex(index)}
+                      tabIndex={0}
+                      role="button"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setGalleryIndex(index);
+                        }
+                      }}
+                      className="object-contain rounded-lg border-2 border-gray-200 hover:border-blue-400 hover:scale-105 transition-all duration-200 shadow-sm hover:shadow-md cursor-zoom-in justify-self-center"
                     />
                   </div>
                 ))}
@@ -157,6 +169,11 @@ export default function Video({
           </div>
         </div>
       </div>
+      <Gallery
+        images={metadata.thumbnails_base64}
+        index={galleryIndex}
+        onClose={() => setGalleryIndex(null)}
+      />
     </div>
   );
 }

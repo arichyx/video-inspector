@@ -1,5 +1,34 @@
 @import "tailwindcss";
 
+/* Lightbox gallery animations */
+@keyframes gallery-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes gallery-zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.gallery-fade-in {
+  animation: gallery-fade-in 0.15s ease-out;
+}
+
+.gallery-zoom-in {
+  animation: gallery-zoom-in 0.15s ease-out;
+}
+
 /* .logo.vite:hover {
   filter: drop-shadow(0 0 2em #747bff);
 }
