@@ -1,10 +1,6 @@
 use base64::{engine::general_purpose, Engine};
 use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::{fs, io::Read, time::Instant};
 use tauri_plugin_shell::ShellExt;
 use thiserror::Error;
 
@@ -212,29 +208,39 @@ async fn get_video_info_with_ffprobe(
     })
 }
 
-/// Generate 4 thumbnails using ffmpeg sidecar
+/// Number of thumbnails to extract, evenly distributed across the video.
+const THUMBNAIL_COUNT: usize = 4;
+
+/// Generate thumbnails using the ffmpeg sidecar.
+///
+/// Thumbnails are extracted concurrently, then re-ordered by their timeline
+/// position so they always render left-to-right (10% → 90%) regardless of
+/// which extraction finishes first. Individual failures are logged and skipped
+/// rather than aborting the whole extraction — the rest of the metadata is
+/// already available and worth showing.
 async fn generate_thumbnails_with_ffmpeg(
     app_handle: &tauri::AppHandle,
     path: &str,
     video_info: &VideoInfo,
 ) -> Result<Vec<String>, Error> {
-    tracing::debug!(video_path = %path, "Generating 4 thumbnails with ffmpeg");
+    tracing::debug!(
+        video_path = %path,
+        "Generating {} thumbnails with ffmpeg",
+        THUMBNAIL_COUNT
+    );
 
     let temp_dir = std::env::temp_dir();
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| Error::FFmpegError(format!("System time error: {}", e)))?
         .as_nanos();
 
     // Ensure temp directory exists
     std::fs::create_dir_all(&temp_dir)?;
 
-    // let shell = app_handle.shell();
-    let thumbnails_base64 = Arc::new(Mutex::new(Vec::new()));
-
-    // Calculate 4 time points evenly distributed across the video duration
+    // Evenly distributed time points across the video duration
     let duration = video_info.duration;
-    let time_points = [
+    let time_points: [f64; THUMBNAIL_COUNT] = [
         duration * 0.1, // 10% into the video
         duration * 0.3, // 30% into the video
         duration * 0.6, // 60% into the video
@@ -243,86 +249,103 @@ async fn generate_thumbnails_with_ffmpeg(
 
     let start = Instant::now();
 
-    // tauri::async_runtime::spawn(task)
-    let mut tasks = vec![];
-
-    for (i, &time_point) in time_points.iter().enumerate() {
+    let mut tasks = Vec::with_capacity(THUMBNAIL_COUNT);
+    for (index, &time_point) in time_points.iter().enumerate() {
         let app_handle = app_handle.clone();
         let path = path.to_string();
         let temp_dir = temp_dir.clone();
-        let thumbnails_base64 = thumbnails_base64.clone();
         tasks.push(tauri::async_runtime::spawn(async move {
-            let temp_image_path = temp_dir.join(format!("thumbnail_{}_{}.png", timestamp, i));
-
-            // Generate thumbnail at specific time point - optimized for speed
-            let temp_image_path_string = temp_image_path.to_str().unwrap().to_string();
-
-            let output = tauri::async_runtime::spawn_blocking(move || -> Result<_, Error> {
-                Ok(app_handle
-                    .shell()
-                    .sidecar("ffmpeg")
-                    .map_err(|e| Error::FFmpegError(format!("Failed to execute ffmpeg: {}", e)))?
-                    .args([
-                        "-ss",
-                        &format!("{:.2}", time_point),
-                        "-i",
-                        &path,
-                        "-vframes",
-                        "1",
-                        "-vf",
-                        "scale=480:270:force_original_aspect_ratio=decrease", // Smaller size for thumbnails
-                        "-q:v",
-                        "2",
-                        "-f",
-                        "image2",
-                        "-y",
-                        &temp_image_path_string,
-                    ])
-                    .output())
-            })
-            .await
-            .map_err(|e| Error::FFmpegError(format!("Failed to execute ffmpeg: {}", e)))??
-            .await?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let _ = fs::remove_file(&temp_image_path);
-                return Err(Error::FFmpegError(format!(
-                    "ffmpeg thumbnail generation failed at time {:.2}s: {}",
-                    time_point, stderr
-                )));
-            }
-
-            // Read the generated image file and convert to base64
-            let image_data = fs::read(&temp_image_path)?;
-            let thumbnail_base64 = general_purpose::STANDARD.encode(&image_data);
-            {
-                let mut thumbnails_base64 = thumbnails_base64.lock().unwrap();
-                thumbnails_base64.push(format!("data:image/png;base64,{}", thumbnail_base64));
-            }
-
-            // Clean up temporary file
-            let _ = fs::remove_file(&temp_image_path);
-
-            Ok(())
+            let thumbnail =
+                extract_thumbnail_at(app_handle, path, temp_dir, timestamp, index, time_point)
+                    .await?;
+            Ok::<(usize, String), Error>((index, thumbnail))
         }));
     }
+
+    // Collect results and sort by timeline index so order is deterministic.
+    let mut results: Vec<(usize, String)> = Vec::with_capacity(THUMBNAIL_COUNT);
+    let mut failures = 0usize;
     for task in tasks {
-        let _ = task.await;
+        match task.await {
+            Ok(Ok(pair)) => results.push(pair),
+            Ok(Err(e)) => {
+                failures += 1;
+                tracing::warn!(error = %e, "Thumbnail generation failed, skipping");
+            }
+            Err(e) => {
+                failures += 1;
+                tracing::warn!(error = %e, "Thumbnail task panicked, skipping");
+            }
+        }
     }
+    results.sort_by_key(|(index, _)| *index);
 
     let elapsed = start.elapsed();
-
-    let thumbnails_base64 = thumbnails_base64.lock().unwrap().clone();
-
     tracing::debug!(
         video_path = %path,
-        thumbnails_count = thumbnails_base64.len(),
-        "Successfully generated thumbnails in {:?}",
-        elapsed
+        thumbnails_count = results.len(),
+        failures = failures,
+        elapsed = ?elapsed,
+        "Thumbnail generation complete"
     );
 
-    Ok(thumbnails_base64)
+    Ok(results.into_iter().map(|(_, thumbnail)| thumbnail).collect())
+}
+
+/// Extract a single thumbnail at `time_point` and return it as a base64 data URI.
+async fn extract_thumbnail_at(
+    app_handle: tauri::AppHandle,
+    path: String,
+    temp_dir: std::path::PathBuf,
+    timestamp: u128,
+    index: usize,
+    time_point: f64,
+) -> Result<String, Error> {
+    let temp_image_path = temp_dir.join(format!("thumbnail_{}_{}.png", timestamp, index));
+    let temp_image_path_string = temp_image_path
+        .to_str()
+        .ok_or_else(|| Error::FFmpegError("Thumbnail temp path is not valid UTF-8".to_string()))?
+        .to_string();
+
+    // Seek to the time point, grab one frame, downscale for a compact thumbnail.
+    let output = app_handle
+        .shell()
+        .sidecar("ffmpeg")
+        .map_err(|e| Error::FFmpegError(format!("Failed to execute ffmpeg: {}", e)))?
+        .args([
+            "-ss",
+            &format!("{:.2}", time_point),
+            "-i",
+            &path,
+            "-vframes",
+            "1",
+            "-vf",
+            "scale=480:270:force_original_aspect_ratio=decrease",
+            "-q:v",
+            "2",
+            "-f",
+            "image2",
+            "-y",
+            &temp_image_path_string,
+        ])
+        .output()
+        .await
+        .map_err(|e| Error::FFmpegError(format!("Failed to execute ffmpeg: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = fs::remove_file(&temp_image_path);
+        return Err(Error::FFmpegError(format!(
+            "ffmpeg thumbnail generation failed at time {:.2}s: {}",
+            time_point, stderr
+        )));
+    }
+
+    // Read the generated image, encode to base64, then clean up the temp file.
+    let image_data = fs::read(&temp_image_path)?;
+    let _ = fs::remove_file(&temp_image_path);
+    let thumbnail_base64 = general_purpose::STANDARD.encode(&image_data);
+    Ok(format!("data:image/png;base64,{}", thumbnail_base64))
 }
 
 /// Parse a fraction string like "30/1" to a float
@@ -370,11 +393,20 @@ fn get_file_size(path: &str) -> Result<String, Error> {
     }
 }
 
-/// Calculate SHA256 hash of the file
+/// Calculate the SHA256 hash of a file.
+///
+/// The file is read in fixed-size chunks rather than loaded into memory in
+/// full, so multi-gigabyte videos don't exhaust the process heap.
 fn calculate_file_hash(path: &str) -> Result<String, Error> {
-    let file_data = fs::read(path)?;
+    let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
-    hasher.update(&file_data);
-    let result = hasher.finalize();
-    Ok(format!("{:x}", result))
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }

@@ -23,15 +23,12 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22.1"
-image = { version = "0.25.6", features = ["png"] }
 thiserror = "2.0.12"
 tauri-plugin-dialog = "2"
 # Logging dependencies
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "time", "local-time"] }
-tracing-appender = "0.2"
 time = { version = "0.3", features = ["formatting", "macros"] }
-dirs = "6.0"
 tauri-plugin-shell = "2"
 sha2 = "0.10.9"
 

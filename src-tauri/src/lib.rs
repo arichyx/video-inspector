@@ -26,13 +26,6 @@ pub fn get_app_handle() -> Option<&'static AppHandle> {
     APP_HANDLE.get()
 }
 
-/// Get a clone of the global APP_HANDLE
-///
-/// Returns None if the APP_HANDLE hasn't been initialized yet
-pub fn get_app_handle_clone() -> Option<AppHandle> {
-    APP_HANDLE.get().cloned()
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging system

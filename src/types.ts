@@ -7,5 +7,4 @@ export interface VideoMetadata {
   file_size: string;
   file_hash: string;
   thumbnails_base64: string[];
-  error?: string;
 }

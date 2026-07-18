@@ -341,16 +341,8 @@ download_linux() {
   echo "Extracting archive..."
   mkdir -p "temp_linux"
 
-  # Handle different archive formats
-  if [[ "ffmpeg-linux.tar.xz" == *.tar.xz ]]; then
-    tar -xf "ffmpeg-linux.tar.xz" -C "temp_linux"
-  elif [[ "ffmpeg-linux.tar.xz" == *linux-x64 ]]; then
-    # Handle single binary from eugeneware/ffmpeg-static
-    mv "ffmpeg-linux.tar.xz" "temp_linux/ffmpeg"
-    chmod +x "temp_linux/ffmpeg"
-    # Create a dummy ffprobe (some sources only provide ffmpeg)
-    cp "temp_linux/ffmpeg" "temp_linux/ffprobe" 2>/dev/null || true
-  fi
+  # All configured Linux sources ship .tar.xz archives
+  tar -xf "ffmpeg-linux.tar.xz" -C "temp_linux"
 
   # Find the bin directory or binaries
   local bin_dir=$(find "temp_linux" -name "bin" -type d | head -1)

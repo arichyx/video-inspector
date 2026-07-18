@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import './App.css';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
@@ -89,29 +89,39 @@ function App() {
     [addFile, files, metadataMap, processFile, t]
   );
 
-  const unlistenRef = useRef<(() => void) | null>(null);
-  // Listen for drag and drop events inside the webview
+  // Listen for drag-and-drop events inside the webview
   useEffect(() => {
-    (() => {
-      getCurrentWebview()
-        .onDragDropEvent(event => {
-          if (event.payload.type !== 'drop') {
-            return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    getCurrentWebview()
+      .onDragDropEvent(event => {
+        if (event.payload.type !== 'drop') {
+          return;
+        }
+        console.log('Webview drag drop event:', event);
+        const droppedPaths = event.payload.paths ?? [];
+        if (droppedPaths.length > 0) {
+          for (const droppedPath of droppedPaths) {
+            void handleFileDrop(droppedPath);
           }
-          console.log('Webview drag drop event:', event);
-          if (event.payload.paths && event.payload.paths.length > 0) {
-            handleFileDrop(event.payload.paths[0]);
-          } else {
-            console.warn(t('errors.noFilesDropped'));
-          }
-        })
-        .then(unlisten => {
-          if (unlistenRef.current) {
-            unlistenRef.current();
-          }
-          unlistenRef.current = unlisten;
-        });
-    })();
+        } else {
+          console.warn(t('errors.noFilesDropped'));
+        }
+      })
+      .then(fn => {
+        if (cancelled) {
+          // Effect torn down before the listener resolved — release it now.
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, [handleFileDrop, t]);
 
   // Handle video deletion
